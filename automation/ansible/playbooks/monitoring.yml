@@ -1,0 +1,45 @@
+---
+- name: Install kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    monitoring_namespace: monitoring
+    release: kube-prometheus-stack
+    chart_version: "66.1.1"
+    values_file: "{{ playbook_dir }}/../../../platform/monitoring/kube-prometheus-stack/values.yaml"
+    grafana_ingress: "{{ playbook_dir }}/../../../platform/monitoring/ingress/grafana-ingress.yaml"
+
+  tasks:
+    - name: Ensure helm is installed
+      ansible.builtin.shell: |
+        set -e
+        if ! command -v helm >/dev/null 2>&1; then
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+        helm version
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Add prometheus-community helm repo
+      ansible.builtin.command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      changed_when: false
+
+    - name: Update helm repos
+      ansible.builtin.command: helm repo update
+      changed_when: false
+
+    - name: Install/upgrade kube-prometheus-stack
+      ansible.builtin.command: >
+        helm upgrade --install {{ release }} prometheus-community/kube-prometheus-stack
+        --namespace {{ monitoring_namespace }} --create-namespace
+        --wait --timeout 15m
+        --version {{ chart_version }}
+        -f {{ values_file }}
+      changed_when: false
+
+    - name: Apply Grafana ingress
+      ansible.builtin.command: kubectl apply -f {{ grafana_ingress }}
+      environment:
+        KUBECONFIG: "{{ lookup('env','HOME') + '/.kube/config' }}"
+      changed_when: false

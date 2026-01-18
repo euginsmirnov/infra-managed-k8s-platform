@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: custom-memory-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: custom.memory.rules
+      rules:
+        - alert: NodeMemoryHigh
+          expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Low memory on node"
+            description: "Node {{ $labels.instance }} has less than 10% memory available for more than 10 minutes."
+
+        - alert: PodMemoryNearLimit
+          expr: |
+            (container_memory_working_set_bytes{container!="",image!=""}
+              / container_spec_memory_limit_bytes{container!="",image!=""}) > 0.90
+            and container_spec_memory_limit_bytes{container!="",image!=""} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod memory is close to limit"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} (ns={{ $labels.namespace }}) is using >90% of its memory limit."
