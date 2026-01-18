@@ -1,0 +1,6 @@
+---
+- name: Bootstrap nodes for kubeadm
+  hosts: control_plane:workers
+  become: true
+  roles:
+    - bootstrap
