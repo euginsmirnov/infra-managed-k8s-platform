@@ -1,0 +1,28 @@
+---
+- name: Allow all traffic from cluster nodes (UFW) - workers
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    ufw --force enable || true
+    {% for h in (groups['control_plane'] + groups['workers']) %}
+    ufw allow from {{ hostvars[h].ansible_host }} comment 'k8s cluster peer {{ h }}' || true
+    {% endfor %}
+    ufw status verbose
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Check if node already joined
+  become: true
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubeletconf
+
+- name: Join worker to cluster
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    /tmp/kubeadm_join.sh
+  args:
+    executable: /bin/bash
+  when: not kubeletconf.stat.exists

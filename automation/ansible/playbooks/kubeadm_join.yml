@@ -1,4 +1,14 @@
 ---
+- name: Distribute join script to workers
+  hosts: workers
+  become: true
+  tasks:
+    - name: Copy join script from bastion to workers
+      ansible.builtin.copy:
+        src: "{{ lookup('env','HOME') }}/.kube/kubeadm_join.sh"
+        dest: /tmp/kubeadm_join.sh
+        mode: "0700"
+
 - name: Join worker nodes to cluster
   hosts: workers
   become: true

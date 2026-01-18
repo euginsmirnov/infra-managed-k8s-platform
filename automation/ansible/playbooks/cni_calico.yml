@@ -1,0 +1,8 @@
+---
+- name: Install Calico CNI
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Apply Calico manifest
+      ansible.builtin.command: kubectl apply -f /home/sega/infra-managed-k8s-platform/platform/cni/calico/calico.yaml
+      changed_when: false

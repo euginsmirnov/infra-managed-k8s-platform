@@ -16,3 +16,13 @@
 - `make kubeadm-join`
 
 Детали будут дополняться по мере реализации ролей.
+
+bootstrap (make bootstrap)
+
+init (make kubeadm-init)
+
+install CNI (kubectl apply ... или ansible-playbook ...cni_calico.yml)
+
+join (make kubeadm-join)
+
+проверки kubectl get nodes

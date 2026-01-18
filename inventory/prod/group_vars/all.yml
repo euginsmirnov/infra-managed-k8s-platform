@@ -1,6 +1,7 @@
 ---
-kubernetes_version: "1.29.6"   # фиксируем версии пакетами (пример)
-pod_network_cidr: "10.244.0.0/16"  # под Calico/Flannel (для Cilium будет иначе)
+pod_network_cidr: "192.168.0.0/16"
 service_cidr: "10.96.0.0/12"
+kubernetes_version: "1.29.6"
 
-containerd_version_pin: ""         # можно позже зафиксировать при желании
+bastion_public_ip: 146.0.76.88
+control_plane_endpoint: "185.130.212.174"

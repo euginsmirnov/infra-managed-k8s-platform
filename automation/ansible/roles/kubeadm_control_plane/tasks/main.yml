@@ -1,0 +1,83 @@
+---
+- name: Allow all traffic from cluster nodes (UFW) - control plane
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    ufw --force enable || true
+    {% for h in (groups['control_plane'] + groups['workers']) %}
+    ufw allow from {{ hostvars[h].ansible_host }} comment 'k8s cluster peer {{ h }}' || true
+    {% endfor %}
+    ufw allow from {{ bastion_public_ip }} to any port 22 proto tcp comment 'ssh from bastion' || true
+    ufw allow from {{ bastion_public_ip }} to any port 6443 proto tcp comment 'k8s api from bastion' || true
+    ufw status verbose
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Render kubeadm config on control plane
+  become: true
+  ansible.builtin.template:
+    src: "../../../cluster/kubeadm/configs/kubeadm-config.yaml.j2"
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check if cluster already initialized
+  become: true
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: adminconf
+
+- name: kubeadm init
+  become: true
+  ansible.builtin.command: >
+    kubeadm init --config /etc/kubernetes/kubeadm-config.yaml
+  when: not adminconf.stat.exists
+
+- name: Ensure kubectl access for root on control plane
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    mkdir -p /root/.kube
+    cp -f /etc/kubernetes/admin.conf /root/.kube/config
+    chmod 600 /root/.kube/config
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Fetch admin.conf to bastion
+  become: true
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: /tmp/admin.conf
+    flat: true
+
+- name: Install kubeconfig for current bastion user
+  delegate_to: localhost
+  run_once: true
+  ansible.builtin.shell: |
+    set -e
+    mkdir -p ~/.kube
+    cp -f /tmp/admin.conf ~/.kube/config
+    chmod 600 ~/.kube/config
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Generate join command and save on bastion
+  become: true
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_cmd
+  changed_when: false
+
+- name: Write join command to bastion file
+  delegate_to: localhost
+  run_once: true
+  ansible.builtin.copy:
+    dest: "{{ lookup('env','HOME') }}/.kube/kubeadm_join.sh"
+    content: |
+      #!/usr/bin/env bash
+      set -e
+      {{ join_cmd.stdout }}
+    mode: "0700"
