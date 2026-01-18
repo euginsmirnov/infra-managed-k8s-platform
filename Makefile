@@ -19,3 +19,9 @@ kubeadm-join:
 
 versions:
 	cd automation/ansible && ansible control_plane:workers -m shell -a 'kubeadm version && kubelet --version && kubectl version --client=true && containerd --version'
+
+ingress:
+	cd automation/ansible && ansible-playbook playbooks/ingress_nginx.yml
+
+ufw-ingress:
+	cd automation/ansible && ansible-playbook playbooks/ufw_ingress_ports.yml

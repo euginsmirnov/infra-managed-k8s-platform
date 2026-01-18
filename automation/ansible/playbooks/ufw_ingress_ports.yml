@@ -1,0 +1,16 @@
+---
+- name: Allow HTTP/HTTPS to worker nodes (UFW)
+  hosts: workers
+  become: true
+  tasks:
+    - name: Allow 80/tcp
+      ansible.builtin.command: ufw allow 80/tcp
+      changed_when: false
+
+    - name: Allow 443/tcp
+      ansible.builtin.command: ufw allow 443/tcp
+      changed_when: false
+
+    - name: Show UFW status
+      ansible.builtin.command: ufw status verbose
+      changed_when: false

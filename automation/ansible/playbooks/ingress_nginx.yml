@@ -1,0 +1,35 @@
+---
+- name: Install ingress-nginx (DaemonSet hostNetwork)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    chart_version: "4.14.1"
+    values_file: "{{ playbook_dir }}/../../../platform/ingress/ingress-nginx/values.yaml"
+
+  tasks:
+    - name: Ensure helm is installed
+      ansible.builtin.shell: |
+        set -e
+        if ! command -v helm >/dev/null 2>&1; then
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+        helm version
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Add ingress-nginx helm repo
+      ansible.builtin.command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      changed_when: false
+
+    - name: Update helm repos
+      ansible.builtin.command: helm repo update
+      changed_when: false
+
+    - name: Install/upgrade ingress-nginx
+      ansible.builtin.command: >
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx
+        --namespace ingress-nginx --create-namespace
+        --version {{ chart_version }}
+        -f {{ values_file }}
+      changed_when: false
