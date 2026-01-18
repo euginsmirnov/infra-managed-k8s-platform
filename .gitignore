@@ -1,0 +1,18 @@
+# Ansible
+*.retry
+automation/ansible/.ansible/
+automation/ansible/tmp/
+automation/ansible/*.log
+
+# Secrets / keys (не коммитим)
+**/.vault_pass
+**/*.key
+**/*.pem
+**/*kubeconfig*
+**/id_rsa*
+**/age.key
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
