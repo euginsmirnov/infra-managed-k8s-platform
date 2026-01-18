@@ -1,0 +1,6 @@
+---
+kubernetes_version: "1.29.6-1.1"   # фиксируем версии пакетами (пример)
+pod_network_cidr: "10.244.0.0/16"  # под Calico/Flannel (для Cilium будет иначе)
+service_cidr: "10.96.0.0/12"
+
+containerd_version_pin: ""         # можно позже зафиксировать при желании
