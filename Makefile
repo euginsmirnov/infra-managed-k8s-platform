@@ -16,3 +16,6 @@ kubeadm-init:
 
 kubeadm-join:
 	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/kubeadm_join.yml
+
+versions:
+	cd automation/ansible && ansible control_plane:workers -m shell -a 'kubeadm version && kubelet --version && kubectl version --client=true && containerd --version'

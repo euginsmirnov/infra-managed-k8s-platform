@@ -1,0 +1,12 @@
+---
+- name: Configure passwordless sudo for devops on all nodes
+  hosts: control_plane:workers
+  become: true
+  tasks:
+    - name: Allow devops to sudo without password
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/devops
+        content: "devops ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"

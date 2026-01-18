@@ -1,0 +1,132 @@
+---
+- name: Ensure base packages are installed
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gpg
+      - apt-transport-https
+      - software-properties-common
+    update_cache: true
+    state: present
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Remove swap from /etc/fstab (comment out)
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\n]+\s+[^#\n]+\s+swap\s+[^#\n]+.*)$'
+    replace: '# \1'
+
+- name: Load required kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure kernel modules are loaded now
+  ansible.builtin.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Set sysctl params for Kubernetes networking
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes-cri.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply sysctl params
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+# --- containerd ---
+- name: Install containerd
+  ansible.builtin.apt:
+    name:
+      - containerd
+    state: present
+    update_cache: true
+
+- name: Ensure containerd config dir exists
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure containerd (SystemdCgroup=true)
+  ansible.builtin.template:
+    src: containerd-config.toml.j2
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart containerd
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+
+# --- Kubernetes packages via pkgs.k8s.io (Ubuntu 24.04-friendly) ---
+- name: Add Kubernetes apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Kubernetes repository GPG key (v1.29)
+  ansible.builtin.get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes-v1.29-release.key
+    mode: "0644"
+
+- name: Dearmor Kubernetes key into keyring
+  ansible.builtin.command: >
+    gpg --dearmor -o /etc/apt/keyrings/kubernetes-v1.29.gpg /etc/apt/keyrings/kubernetes-v1.29-release.key
+  args:
+    creates: /etc/apt/keyrings/kubernetes-v1.29.gpg
+
+- name: Add Kubernetes apt repository (v1.29)
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-v1.29.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
+    filename: kubernetes-v1.29
+    state: present
+
+- name: Install kubelet, kubeadm, kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_version }}-*"
+      - "kubeadm={{ kubernetes_version }}-*"
+      - "kubectl={{ kubernetes_version }}-*"
+    state: present
+    update_cache: true
+
+- name: Hold Kubernetes packages
+  ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+  changed_when: false
+
+- name: Enable kubelet (it will crashloop until cluster init, that's OK)
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+  notify: restart kubelet
