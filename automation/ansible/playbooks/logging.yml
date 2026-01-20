@@ -1,0 +1,90 @@
+---
+- name: Install Loki + Promtail
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    loki_namespace: logging
+    loki_release: loki
+    loki_chart: grafana/loki
+    loki_chart_version: "6.49.0"
+    loki_values: "{{ playbook_dir }}/../../../platform/logging/loki/values.yaml"
+
+    promtail_namespace: logging
+    promtail_release: promtail
+    promtail_chart: grafana/promtail
+    promtail_chart_version: "6.16.6"
+    promtail_values: "{{ playbook_dir }}/../../../platform/logging/promtail/values.yaml"
+
+    # опционально: добавить Loki datasource в Grafana (kube-prometheus-stack)
+    grafana_ns: monitoring
+    grafana_loki_ds_cm: "{{ playbook_dir }}/../../../platform/monitoring/grafana/datasource-loki.yaml"
+
+  tasks:
+    - name: Ensure helm is installed
+      command: helm version
+      changed_when: false
+
+    - name: Add grafana helm repo
+      command: helm repo add grafana https://grafana.github.io/helm-charts
+      changed_when: false
+
+    - name: Update helm repos
+      command: helm repo update
+      changed_when: false
+
+    - name: Install/upgrade Loki
+      command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - "{{ loki_release }}"
+          - "{{ loki_chart }}"
+          - --namespace
+          - "{{ loki_namespace }}"
+          - --create-namespace
+          - --version
+          - "{{ loki_chart_version }}"
+          - -f
+          - "{{ loki_values }}"
+          - --wait
+          - --timeout
+          - 15m
+
+    - name: Install/upgrade Promtail
+      command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - "{{ promtail_release }}"
+          - "{{ promtail_chart }}"
+          - --namespace
+          - "{{ promtail_namespace }}"
+          - --create-namespace
+          - --version
+          - "{{ promtail_chart_version }}"
+          - -f
+          - "{{ promtail_values }}"
+          - --wait
+          - --timeout
+          - 15m
+
+    - name: Ensure Loki datasource file exists (optional)
+      stat:
+        path: "{{ grafana_loki_ds_cm }}"
+      register: loki_ds_file
+
+    - name: Apply Loki datasource to Grafana (optional)
+      when: loki_ds_file.stat.exists
+      command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ lookup('env','KUBECONFIG') | default(lookup('env','HOME') + '/.kube/config', true) }}"
+          - -n
+          - monitoring
+          - apply
+          - -f
+          - /home/sega/infra-managed-k8s-platform/platform/monitoring/grafana/datasource-loki.yaml

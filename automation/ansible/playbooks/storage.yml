@@ -1,0 +1,54 @@
+---
+- name: Install local-path-provisioner StorageClass
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    kubeconfig: "{{ lookup('env','KUBECONFIG') | default(lookup('env','HOME') + '/.kube/config', true) }}"
+    manifests_dir: "{{ playbook_dir }}/../../../platform/storage/local-path"
+
+  tasks:
+    - name: Apply local-path provisioner manifest
+      command:
+        argv:
+          - kubectl
+          - --kubeconfig={{ kubeconfig }}
+          - apply
+          - -f
+          - "{{ manifests_dir }}/local-path-provisioner.yaml"
+
+    - name: Wait for provisioner to be Ready
+      command:
+        argv:
+          - kubectl
+          - --kubeconfig={{ kubeconfig }}
+          - -n
+          - local-path-storage
+          - rollout
+          - status
+          - deploy/local-path-provisioner
+          - --timeout=5m
+
+    - name: Apply StorageClass (default)
+      command:
+        argv:
+          - kubectl
+          - --kubeconfig={{ kubeconfig }}
+          - apply
+          - -f
+          - "{{ manifests_dir }}/storageclass.yaml"
+
+    - name: Show storageclasses
+      command:
+        argv:
+          - kubectl
+          - --kubeconfig={{ kubeconfig }}
+          - get
+          - storageclass
+          - -o
+          - wide
+      register: sc_out
+
+    - debug:
+        var: sc_out.stdout_lines

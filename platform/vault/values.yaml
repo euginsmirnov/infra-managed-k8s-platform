@@ -1,0 +1,30 @@
+server:
+  ha:
+    enabled: true
+    raft:
+      enabled: true
+      setNodeId: true
+
+  dataStorage:
+    enabled: true
+    storageClass: local-path
+    size: 5Gi
+
+ui:
+  enabled: true
+
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # если будет спор с ingressClass — раскомментируй:
+    # acme.cert-manager.io/http01-ingress-class: nginx
+  hosts:
+    - host: vault.ejara1.ru
+      paths:
+        - /
+  tls:
+    - secretName: vault-tls
+      hosts:
+        - vault.ejara1.ru

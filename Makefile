@@ -25,3 +25,18 @@ ingress:
 
 ufw-ingress:
 	cd automation/ansible && ansible-playbook playbooks/ufw_ingress_ports.yml
+
+monitoring:
+	cd automation/ansible && ansible-playbook playbooks/monitoring.yml
+
+logging:
+	cd automation/ansible && ansible-playbook playbooks/logging.yml
+
+storage:
+	cd automation/ansible && ansible-playbook playbooks/storage.yml
+
+cert-manager:
+	ansible-playbook -i automation/ansible/inventory automation/ansible/playbooks/cert-manager.yml
+
+vault:
+	ansible-playbook -i automation/ansible/inventory automation/ansible/playbooks/vault.yml

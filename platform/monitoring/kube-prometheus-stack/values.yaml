@@ -1,0 +1,73 @@
+# Лёгкая конфигурация для небольшого кластера (VDS)
+grafana:
+  env:
+    GF_SERVER_HTTP_ADDR: "0.0.0.0"
+
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 30
+    timeoutSeconds: 5
+    periodSeconds: 10
+    failureThreshold: 12
+
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 60
+    timeoutSeconds: 5
+    periodSeconds: 10
+    failureThreshold: 10
+  enabled: true
+  adminUser: admin
+  adminPassword: "change-me"   # для MVP ок, позже вынесем в secret manager
+  service:
+    type: ClusterIP
+
+prometheus:
+  enabled: true
+  prometheusSpec:
+    retention: 2d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# Чтобы не перегружать кластер
+kubeEtcd:
+  enabled: false
+
+kubeControllerManager:
+  enabled: true
+
+kubeScheduler:
+  enabled: true
+
+kubeProxy:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+
+prometheusOperator:
+  admissionWebhooks:
+    enabled: false

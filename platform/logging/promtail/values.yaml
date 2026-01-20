@@ -1,0 +1,27 @@
+config:
+  clients:
+    - url: http://loki.logging.svc.cluster.local:3100/loki/api/v1/push
+
+  snippets:
+    pipelineStages:
+      - cri: {}
+
+    extraRelabelConfigs:
+      - action: replace
+        source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container
+      - action: replace
+        source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+tolerations:
+  - operator: Exists
+
+serviceMonitor:
+  enabled: true
