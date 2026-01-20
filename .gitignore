@@ -16,3 +16,8 @@ automation/ansible/*.log
 .DS_Store
 .idea/
 .vscode/
+
+# Python virtualenv
+.venv/
+__pycache__/
+*.pyc
