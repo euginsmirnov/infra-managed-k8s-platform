@@ -2,27 +2,26 @@
 - name: Install Vault (raft, ingress, cert-manager tls) and bootstrap auth
   hosts: localhost
   connection: local
+
   gather_facts: false
 
   vars:
     kubeconfig: "{{ lookup('env','KUBECONFIG') | default('~/.kube/config', true) }}"
-
+    ansible_python_interpreter: /home/sega/infra-managed-k8s-platform/.venv/bin/python
     vault_namespace: vault
     vault_release: vault
     vault_chart_ref: hashicorp/vault
     vault_chart_version: ""     # можно зафиксировать
 
-    vault_values_file: "{{ playbook_dir }}/../../platform/vault/values.yaml"
+    vault_values_file: "{{ playbook_dir }}/../../../platform/vault/values.yaml"
     vault_hostname: vault.ejara1.ru
     vault_tls_secret: vault-tls
 
     # Bootstrap toggle
     vault_bootstrap_enabled: true
-    vault_bootstrap_script: "{{ playbook_dir }}/../../platform/vault/bootstrap/vault-bootstrap.sh"
+    vault_bootstrap_script: "{{ playbook_dir }}/../../../platform/vault/bootstrap/vault-bootstrap.sh"
 
-    # Где хранить root token / unseal keys — НЕ в кластере.
-    # На MVP bootstrap будет требовать VAULT_TOKEN извне (после init/unseal).
-    # Секреты в git не кладём.
+    # Адрес Vault (через ingress)
     vault_addr: "https://{{ vault_hostname }}"
 
     repo_name: hashicorp
@@ -57,7 +56,13 @@
         values_files:
           - "{{ vault_values_file }}"
 
-    - name: Wait for Vault pod to be Ready
+    - name: Apply Vault Ingress (managed by platform repo)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        src: "{{ playbook_dir }}/../../../platform/vault/ingress.yaml"
+
+    - name: Wait for Vault pod to be Running
       kubernetes.core.k8s_info:
         kubeconfig: "{{ kubeconfig }}"
         kind: Pod
@@ -69,10 +74,7 @@
       delay: 5
       until: >
         (vault_pods.resources | length) >= 1 and
-        (
-          vault_pods.resources[0].status.conditions | selectattr('type','equalto','Ready')
-          | selectattr('status','equalto','True') | list | length
-        ) == 1
+        (vault_pods.resources[0].status.phase == "Running")
 
     - name: Wait for Vault TLS secret to appear (cert-manager)
       kubernetes.core.k8s_info:
@@ -86,6 +88,30 @@
       delay: 5
       until: tls_secret.resources | length == 1
 
+    - name: Apply Vault auth reviewer RBAC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        src: "{{ playbook_dir }}/../../../platform/vault/rbac-vault-auth.yaml"
+
+    - name: Check if vault-bootstrap-token secret exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        namespace: "{{ vault_namespace }}"
+        name: vault-bootstrap-token
+      register: bootstrap_token_secret
+
+    - name: Decide whether bootstrap should run
+      ansible.builtin.set_fact:
+        bootstrap_should_run: "{{ vault_bootstrap_enabled and (bootstrap_token_secret.resources | length == 1) }}"
+
+    - name: Bootstrap skipped (vault-bootstrap-token secret not found)
+      ansible.builtin.debug:
+        msg: "Skipping vault bootstrap job because secret 'vault-bootstrap-token' is missing. Create it after init/unseal, then rerun make vault."
+      when: vault_bootstrap_enabled and not bootstrap_should_run
+
     - name: (Optional) Create bootstrap ConfigMap with script
       when: vault_bootstrap_enabled
       kubernetes.core.k8s:
@@ -98,10 +124,20 @@
             name: vault-bootstrap-script
             namespace: "{{ vault_namespace }}"
           data:
-            vault-bootstrap.sh: "{{ lookup('file', vault_bootstrap_script) }}"
+            vault-bootstrap.sh: |
+              {{ lookup('file', vault_bootstrap_script) | indent(14) }}
 
-    - name: (Optional) Create bootstrap Job (requires VAULT_TOKEN provided at runtime)
-      when: vault_bootstrap_enabled
+    - name: (Optional) Delete previous bootstrap Job if exists
+      when: bootstrap_should_run
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: absent
+        kind: Job
+        namespace: "{{ vault_namespace }}"
+        name: vault-bootstrap
+
+    - name: (Optional) Create bootstrap Job (requires VAULT_TOKEN secret created manually)
+      when: bootstrap_should_run
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig }}"
         state: present
@@ -114,17 +150,19 @@
           spec:
             backoffLimit: 1
             template:
+              metadata:
+                labels:
+                  app: vault-bootstrap
               spec:
                 restartPolicy: Never
+                serviceAccountName: vault-auth
                 containers:
                   - name: bootstrap
-                    image: hashicorp/vault:1.16.0
+                    image: hashicorp/vault:1.21.2
+                    imagePullPolicy: IfNotPresent
                     env:
                       - name: VAULT_ADDR
                         value: "{{ vault_addr }}"
-                      # VAULT_TOKEN мы НЕ храним в кластере.
-                      # Перед запуском job ты создашь secret vault-bootstrap-token вручную
-                      # (или через отдельный плейбук, который читает токен из vault_token_file на ansible-host).
                       - name: VAULT_TOKEN
                         valueFrom:
                           secretKeyRef:
@@ -133,11 +171,23 @@
                     volumeMounts:
                       - name: script
                         mountPath: /scripts
-                    command: ["/bin/sh","-lc"]
+                        readOnly: true
+                    command: ["sh", "-lc"]
                     args:
-                      - "chmod +x /scripts/vault-bootstrap.sh && /scripts/vault-bootstrap.sh"
+                      - |
+                        set -eu
+                        echo "[*] Waiting for Vault..."
+                        for i in $(seq 1 60); do
+                          if vault status >/dev/null 2>&1; then
+                            echo "[+] Vault is reachable"
+                            break
+                          fi
+                          sleep 2
+                        done
+                        echo "[*] Running bootstrap script"
+                        sh /scripts/vault-bootstrap.sh
                 volumes:
                   - name: script
                     configMap:
                       name: vault-bootstrap-script
-                      defaultMode: 0755
+                      defaultMode: 0444

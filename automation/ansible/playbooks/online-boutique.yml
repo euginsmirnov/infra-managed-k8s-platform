@@ -1,0 +1,156 @@
+---
+- name: Deploy Online Boutique (full) with ingress + cert-manager TLS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /home/sega/infra-managed-k8s-platform/.venv/bin/python
+    kubeconfig: "{{ lookup('env','KUBECONFIG') | default('~/.kube/config', true) }}"
+
+    ob_namespace: online-boutique
+    ob_host: shop.ejara1.ru
+
+    # Upstream manifest (official release)
+    ob_upstream_url: "https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml"
+    ob_upstream_file: "/tmp/online-boutique-upstream.yaml"
+
+    # Small cluster tuning
+    ob_small_cluster_tuning: true
+
+  tasks:
+    - name: Ensure namespace exists
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        src: "{{ playbook_dir }}/../../../platform/online-boutique/namespace.yaml"
+
+    - name: Download upstream Online Boutique manifest
+      ansible.builtin.get_url:
+        url: "{{ ob_upstream_url }}"
+        dest: "{{ ob_upstream_file }}"
+        mode: "0644"
+
+    - name: Apply upstream manifests into namespace (upstream has no namespace)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        namespace: "{{ ob_namespace }}"
+        src: "{{ ob_upstream_file }}"
+
+    - name: Small-cluster tuning (disable loadgenerator, relax probes, bump resources)
+      when: ob_small_cluster_tuning | bool
+      block:
+        - name: Scale down loadgenerator to 0 (save resources)
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: loadgenerator
+                namespace: "{{ ob_namespace }}"
+              spec:
+                replicas: 0
+
+        - name: Patch emailservice probes + resources for small clusters
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            merge_type:
+              - strategic-merge
+              - merge
+            definition:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: emailservice
+                namespace: "{{ ob_namespace }}"
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: server
+                        resources:
+                          requests:
+                            cpu: 50m
+                            memory: 128Mi
+                          limits:
+                            cpu: 300m
+                            memory: 256Mi
+                        readinessProbe:
+                          grpc:
+                            port: 8080
+                          initialDelaySeconds: 10
+                          timeoutSeconds: 5
+                          periodSeconds: 10
+                          failureThreshold: 6
+                        livenessProbe:
+                          grpc:
+                            port: 8080
+                          initialDelaySeconds: 15
+                          timeoutSeconds: 5
+                          periodSeconds: 10
+                          failureThreshold: 6
+
+        - name: Wait for emailservice rollout after tuning
+          kubernetes.core.k8s_info:
+            kubeconfig: "{{ kubeconfig }}"
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ ob_namespace }}"
+            name: emailservice
+          register: email_dep
+          retries: 60
+          delay: 5
+          until: >
+            email_dep.resources | length == 1 and
+            (email_dep.resources[0].status.availableReplicas | default(0)) >= 1
+
+    - name: Apply Ingress for shop.ejara1.ru
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        src: "{{ playbook_dir }}/../../../platform/online-boutique/ingress.yaml"
+
+    - name: Wait for frontend deployment to be Available
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ ob_namespace }}"
+        name: frontend
+      register: frontend_dep
+      retries: 60
+      delay: 5
+      until: >
+        frontend_dep.resources | length == 1 and
+        (frontend_dep.resources[0].status.availableReplicas | default(0)) >= 1
+    
+    - name: Wait for Online Boutique TLS certificate to be Ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        namespace: "{{ ob_namespace }}"
+        name: online-boutique-tls
+      register: ob_cert
+      retries: 60
+      delay: 5
+      until: >
+        ob_cert.resources | length == 1 and
+        (
+          ob_cert.resources[0].status.conditions
+          | selectattr('type','equalto','Ready')
+          | selectattr('status','equalto','True')
+          | list | length
+        ) == 1
+
+    - name: Smoke check https://shop.ejara1.ru (expect 200)
+      ansible.builtin.uri:
+        url: "https://{{ ob_host }}"
+        method: GET
+        return_content: false
+        status_code: [200, 302]
+        validate_certs: true

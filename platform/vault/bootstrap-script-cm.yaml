@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-bootstrap-script
+  namespace: vault
+data:
+  vault-bootstrap.sh: |
+    #!/bin/sh
+    set -eu
+    # Вставь сюда скрипт из прошлого сообщения (vault-bootstrap.sh)
+#!/bin/sh
+set -eu
+
+# -----------------------------
+# Config (can be overridden via env)
+# -----------------------------
+: "${VAULT_ADDR:=https://vault.ejara1.ru}"
+: "${KV_MOUNT:=secret}"
+: "${DEMO_SECRET_PATH:=demo/hello}"
+
+: "${K8S_AUTH_MOUNT:=kubernetes}"
+: "${K8S_ROLE:=demo-app}"
+: "${K8S_BOUND_NS:=demo}"
+: "${K8S_BOUND_SA:=demo-app}"
+
+: "${APP_POLICY:=app-read-secret}"
+
+# If set to "true", overwrite default policy with minimal placeholder.
+: "${HARDEN_DEFAULT_POLICY:=false}"
+
+echo "[*] Vault addr: ${VAULT_ADDR}"
+
+# Sanity: require token
+if [ -z "${VAULT_TOKEN:-}" ]; then
+  echo "[!] VAULT_TOKEN is not set. Provide it via env/secret for bootstrap job." >&2
+  exit 1
+fi
+
+# Basic status check (non-fatal if it errors due to TLS/etc)
+vault status || true
+
+# -----------------------------
+# Enable KV v2 at KV_MOUNT/ (idempotent)
+# -----------------------------
+echo "[*] Enable KV v2 at ${KV_MOUNT}/ (idempotent)"
+if vault secrets list -format=json | grep -q "\"${KV_MOUNT}/\""; then
+  # Ensure it's kv-v2. If already kv-v2 — ok. If kv-v1 — warn loudly.
+  ENGINE="$(vault secrets list -format=json | awk -v m="${KV_MOUNT}/" -F'"' \
+    '$2==m {for (i=1;i<=NF;i++) if ($i=="type") {print $(i+2); exit}}')"
+  if [ "${ENGINE}" = "kv" ]; then
+    # Could still be kv-v1 or kv-v2 (both show type=kv). Try a kv-v2 read to verify.
+    if vault read -format=json "${KV_MOUNT}/config" >/dev/null 2>&1; then
+      echo "    KV seems configured (kv-v2)."
+    else
+      echo "    KV mount exists but kv-v2 config endpoint not readable; proceeding."
+    fi
+  else
+    echo "[!] Mount ${KV_MOUNT}/ exists but is not kv (type=${ENGINE})." >&2
+  fi
+else
+  vault secrets enable -path="${KV_MOUNT}" kv-v2
+fi
+
+# -----------------------------
+# Enable kubernetes auth (idempotent)
+# -----------------------------
+echo "[*] Enable kubernetes auth at auth/${K8S_AUTH_MOUNT}/ (idempotent)"
+if vault auth list -format=json | grep -q "\"${K8S_AUTH_MOUNT}/\""; then
+  echo "    auth/${K8S_AUTH_MOUNT}/ already enabled"
+else
+  vault auth enable -path="${K8S_AUTH_MOUNT}" kubernetes
+fi
+
+# -----------------------------
+# Configure kubernetes auth
+#
+# NOTE: This expects the pod SA token to have TokenReview permissions
+# (serviceAccountName: vault-auth + system:auth-delegator binding).
+# -----------------------------
+echo "[*] Configure kubernetes auth"
+K8S_HOST="https://kubernetes.default.svc"
+K8S_CA_CERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+K8S_REVIEWER_JWT="/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+if [ ! -s "${K8S_REVIEWER_JWT}" ]; then
+  echo "[!] ServiceAccount token not found at ${K8S_REVIEWER_JWT}. Ensure the job has a ServiceAccount." >&2
+  exit 1
+fi
+
+vault write "auth/${K8S_AUTH_MOUNT}/config" \
+  token_reviewer_jwt="$(cat "${K8S_REVIEWER_JWT}")" \
+  kubernetes_host="${K8S_HOST}" \
+  kubernetes_ca_cert=@"${K8S_CA_CERT}" \
+  disable_iss_validation=true
+
+# -----------------------------
+# Create policy for app
+# KV v2 data path is: <mount>/data/<path>
+# Allow sys/internal/ui/mounts for vault kv convenience.
+# -----------------------------
+echo "[*] Create/Update policy ${APP_POLICY}"
+cat <<EOF | vault policy write "${APP_POLICY}" -
+path "${KV_MOUNT}/data/demo/*" {
+  capabilities = ["read"]
+}
+
+path "sys/internal/ui/mounts/*" {
+  capabilities = ["read"]
+}
+EOF
+
+# Optional: keep default policy minimal (do not change by default)
+if [ "${HARDEN_DEFAULT_POLICY}" = "true" ]; then
+  echo "[*] Overwrite default policy (minimal)"
+  vault policy write default - <<'EOF'
+# Default policy (intentionally minimal)
+EOF
+fi
+
+# -----------------------------
+# Create/Update role
+# -----------------------------
+echo "[*] Create/Update role ${K8S_ROLE}"
+vault write "auth/${K8S_AUTH_MOUNT}/role/${K8S_ROLE}" \
+  bound_service_account_names="${K8S_BOUND_SA}" \
+  bound_service_account_namespaces="${K8S_BOUND_NS}" \
+  token_policies="${APP_POLICY}" \
+  token_ttl="24h"
+
+# -----------------------------
+# Put sample secret
+# -----------------------------
+echo "[*] Put sample secret at ${KV_MOUNT}/${DEMO_SECRET_PATH}"
+vault kv put "${KV_MOUNT}/${DEMO_SECRET_PATH}" value="world" >/dev/null
+
+echo "[+] Bootstrap completed"

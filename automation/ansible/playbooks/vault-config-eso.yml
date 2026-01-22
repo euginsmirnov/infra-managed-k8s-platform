@@ -1,0 +1,52 @@
+---
+- name: Configure Vault for External Secrets Operator (policy + role)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    kubeconfig: "{{ lookup('env','KUBECONFIG') | default('~/.kube/config', true) }}"
+    vault_namespace: vault
+    vault_pod: vault-0
+
+    # Берём root/admin token ИЗ ENV. Ничего не храним.
+    vault_token: "{{ lookup('env', 'VAULT_TOKEN') | default('', true) }}"
+
+  tasks:
+    - name: Fail if VAULT_TOKEN is not provided
+      ansible.builtin.fail:
+        msg: "VAULT_TOKEN env var is required. Example: VAULT_TOKEN=... make vault-config-eso"
+      when: vault_token | length == 0
+
+    - name: Write eso-read policy and create eso-read role in Vault (via vault CLI in pod)
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ kubeconfig }}"
+        namespace: "{{ vault_namespace }}"
+        pod: "{{ vault_pod }}"
+        command:
+          - sh
+          - -lc
+          - |
+            set -euo pipefail
+            export VAULT_ADDR=http://127.0.0.1:8200
+            export VAULT_TOKEN="{{ vault_token }}"
+
+            echo "[*] Writing policy eso-read"
+            printf '%s\n' \
+              'path "secret/data/*" {' \
+              '  capabilities = ["read"]' \
+              '}' \
+              '' \
+              'path "sys/internal/ui/mounts/*" {' \
+              '  capabilities = ["read"]' \
+              '}' \
+              | vault policy write eso-read -
+
+            echo "[*] Writing role eso-read (kubernetes auth)"
+            vault write auth/kubernetes/role/eso-read \
+              bound_service_account_names="external-secrets" \
+              bound_service_account_namespaces="external-secrets" \
+              policies="eso-read" \
+              ttl="24h" >/dev/null
+
+            echo "[+] Vault configured for ESO"

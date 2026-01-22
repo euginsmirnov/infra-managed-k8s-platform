@@ -1,4 +1,5 @@
 ANSIBLE_DIR=automation/ansible
+INVENTORY := $(ANSIBLE_DIR)/inventory/prod/hosts.ini
 
 .PHONY: deps bootstrap kubeadm-init kubeadm-join ping
 
@@ -36,7 +37,22 @@ storage:
 	cd automation/ansible && ansible-playbook playbooks/storage.yml
 
 cert-manager:
-	ansible-playbook -i automation/ansible/inventory automation/ansible/playbooks/cert-manager.yml
+	cd automation/ansible && ansible-playbook playbooks/cert-manager.yml
 
 vault:
-	ansible-playbook -i automation/ansible/inventory automation/ansible/playbooks/vault.yml
+	cd automation/ansible && ansible-playbook playbooks/vault.yml
+
+external-secrets:
+	cd automation/ansible && ansible-playbook playbooks/external-secrets.yml
+
+vault-config-eso:
+	cd automation/ansible && ansible-playbook playbooks/vault-config-eso.yml
+
+external-secrets-demo:
+	cd automation/ansible && ansible-playbook playbooks/external-secrets-demo.yml
+
+online-boutique:
+	cd automation/ansible && ansible-playbook playbooks/online-boutique.yml
+
+online-boutique-secrets-demo:
+	cd automation/ansible && ansible-playbook playbooks/online-boutique-secrets-demo.yml

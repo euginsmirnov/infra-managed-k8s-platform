@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-bootstrap
+  namespace: vault
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: vault-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: vault-auth
+
+      containers:
+        - name: bootstrap
+          image: hashicorp/vault:1.21.2
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: VAULT_ADDR
+              value: "https://vault.ejara1.ru"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-bootstrap-token
+                  key: token
+            # Опционально: если хочешь принудительно “минимальный” default policy
+            # - name: HARDEN_DEFAULT_POLICY
+            #   value: "true"
+
+          volumeMounts:
+            - name: bootstrap-script
+              mountPath: /scripts
+              readOnly: true
+
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eu
+              echo "[*] Waiting for Vault API..."
+              for i in $(seq 1 60); do
+                if vault status >/dev/null 2>&1; then
+                  echo "[+] Vault is reachable"
+                  break
+                fi
+                sleep 2
+              done
+              echo "[*] Running bootstrap script"
+              sh /scripts/vault-bootstrap.sh
+
+      volumes:
+        - name: bootstrap-script
+          configMap:
+            name: vault-bootstrap-script
+            defaultMode: 0555
