@@ -1,225 +1,138 @@
-# Vault
+# 06 — HashiCorp Vault
 
-## Назначение
+## Цель
 
-Vault используется как **централизованное хранилище секретов** для Kubernetes‑платформы. Решение максимально приближено к production‑подходу:
+Развернуть централизованное хранилище секретов **внутри Kubernetes** без облачных KMS и managed‑сервисов:
 
 * TLS через cert-manager
-* публикация через ingress-nginx
-* HA‑режим на базе Raft
-* Kubernetes auth (ServiceAccount → Vault role)
-* минимум автоматизации вокруг unseal/root token
+* доступ через Ingress (`vault.ejara1.ru`)
+* storage: Raft (PVC через local-path)
+* интеграция с Kubernetes Auth
+* дальнейшее использование через **External Secrets Operator (ESO)**
 
-Цель — управляемая, предсказуемая и безопасная схема без managed‑KMS.
+> Осознанно **без auto-unseal** — unseal выполняется вручную для прозрачности и контроля.
 
 ---
 
 ## Архитектура
 
-### Компоненты
+* Namespace: `vault`
+* Helm chart: `hashicorp/vault`
+* Режим: **HA + Raft** (1 реплика для MVP, готово к scale)
+* Ingress:
 
-* **Vault** (Helm chart `hashicorp/vault`)
-* **Storage**: Raft (PVC через `local-path-provisioner`)
-* **Ingress**: nginx + cert-manager
-* **TLS**: Let’s Encrypt (`ClusterIssuer`)
-* **Auth**: Kubernetes auth method
+  * host: `vault.ejara1.ru`
+  * TLS: Let’s Encrypt (cert-manager)
+* Services:
 
-### Namespace
+  * `vault-active` — активный лидер
+  * `vault-standby` — standby (при scale)
 
-```
-vault
-```
-
-### DNS / Ingress
-
-```
-vault.ejara1.ru → ingress-nginx → vault service
-```
-
-TLS‑секрет:
-
-```
-vault-tls
-```
+**Важно:** Pod может быть `Running`, но **не Ready**, пока Vault запечатан (sealed). Это ожидаемое поведение.
 
 ---
 
-## Deployment flow
-
-### 1. Установка Vault
-
-Выполняется через Ansible + Helm:
-
-* Namespace `vault`
-* Helm release `vault`
-* Ingress + TLS
-* RBAC для Kubernetes auth reviewer
-
-Команда:
+## Развёртывание
 
 ```bash
 make vault
 ```
 
-На этом этапе:
+Playbook делает:
 
-* pod `vault-0` = `Running`
-* pod **не Ready**, пока Vault sealed
+* установку Helm chart
+* ожидание выпуска TLS‑сертификата
+* применение RBAC для Kubernetes Auth
+* (опционально) запуск bootstrap‑job
 
 ---
 
-### 2. Init и Unseal (ручной этап)
-
-⚠️ Этот шаг **не автоматизируется намеренно**.
-
-#### Проверка статуса
-
-```bash
-kubectl -n vault exec -it vault-0 -- vault status
-```
-
-#### Init (один раз)
+## Init и Unseal (ручной шаг)
 
 ```bash
 kubectl -n vault exec -it vault-0 -- vault operator init
 ```
 
-Результат:
+Сохранить:
 
-* 5 unseal keys
+* unseal keys
 * root token
 
-🔐 **Хранить вне кластера, не в git**
-
-#### Unseal (3 из 5 ключей)
+Unseal (3 из 5):
 
 ```bash
 kubectl -n vault exec -it vault-0 -- vault operator unseal
 ```
 
-После unseal:
+Проверка:
 
+```bash
+kubectl -n vault exec -it vault-0 -- vault status
+```
+
+Ожидаемо:
+
+* `Initialized: true`
 * `Sealed: false`
-* pod `vault-0` → `Ready`
 
 ---
 
-### 3. Bootstrap (KV + auth)
+## Kubernetes Auth
 
-Bootstrap выполняется **Job‑ом** и настраивает:
+Включён и настроен автоматически bootstrap‑скриптом:
 
-* KV v2 (`secret/`)
-* Kubernetes auth
-* policy `app-read-secret`
-* role `demo-app`
-* тестовый secret `secret/demo/hello`
+* mount: `auth/kubernetes`
+* token reviewer: service account `vault-auth`
 
-#### Подготовка
-
-Создать secret с root token:
+Проверка:
 
 ```bash
-kubectl -n vault create secret generic vault-bootstrap-token \
-  --from-literal=token="<ROOT_TOKEN>"
-```
-
-#### Запуск
-
-```bash
-make vault
-```
-
-#### Проверка логов
-
-```bash
-kubectl -n vault logs job/vault-bootstrap
-```
-
-Ожидаемо:
-
-```
-[+] Bootstrap completed
+kubectl -n vault exec -it vault-0 -- vault auth list
 ```
 
 ---
 
-## Проверка работы (E2E)
+## Secrets Engine
 
-### Тестовый pod
+* Используется **KV v2**
+* mount path: `secret/`
 
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: vault-test
-  namespace: demo
-spec:
-  serviceAccountName: demo-app
-  restartPolicy: Never
-  containers:
-    - name: vault
-      image: hashicorp/vault:1.21.2
-      command: ["sh"]
-      stdin: true
-      tty: true
-```
+Пример секрета:
 
 ```bash
-kubectl -n demo apply -f vault-test.yaml
-kubectl -n demo exec -it vault-test -- sh
-```
-
-### Login в Vault
-
-```sh
-export VAULT_ADDR="https://vault.ejara1.ru"
-JWT="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-
-vault write -format=json auth/kubernetes/login \
-  role="demo-app" \
-  jwt="$JWT" > /tmp/login.json
-```
-
-```sh
-export VAULT_TOKEN="$(awk -F'"' '/client_token/ {print $4}' /tmp/login.json)"
-```
-
-### Чтение секрета
-
-```sh
-vault kv get secret/demo/hello
-```
-
-Ожидаемо:
-
-```
-value: world
+vault kv put secret/demo/hello value=world
 ```
 
 ---
 
-## Security notes
+## Интеграция с External Secrets Operator
 
-* Root token **не хранится** в git или Kubernetes
-* Unseal выполняется вручную
-* Bootstrap job запускается **только при наличии root token secret**
-* Политики минимальные (least privilege)
+Vault используется как backend для ESO:
+
+* `ClusterSecretStore` указывает на `vault.ejara1.ru`
+* аутентификация через Kubernetes Auth
+
+Это позволяет приложениям получать секреты **без прямого доступа к Vault**.
+
+Подробнее: `07-external-secrets.md`
 
 ---
 
-## Ограничения и осознанные решения
+## Ограничения (осознанные)
 
 * ❌ Нет auto‑unseal (KMS/HSM)
-* ❌ Нет dynamic secrets (пока)
-* ❌ Нет External Secrets Operator
+* ❌ Нет cloud storage
+* ❌ Нет dynamic secrets (DB creds и т.п.)
 
-Это сделано намеренно для прозрачности и контроля.
+Для учебного и MVP‑сценария — осознанный компромисс.
 
 ---
 
-## Следующие шаги
+## Проверка end‑to‑end
 
-* Подключение External Secrets Operator
-* Интеграция Online Boutique
-* Audience‑based Kubernetes auth
-* Auto‑unseal (опционально)
+```bash
+kubectl -n vault exec -it vault-0 -- vault status
+kubectl get ingress -n vault
+```
+
+Ingress и TLS должны быть в состоянии `Ready`.
