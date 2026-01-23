@@ -1,69 +1,93 @@
-# 05. Логирование (Loki + Promtail)
+# 05 — Logging (Loki + Promtail)
 
-На данном этапе настраивается централизованное логирование Kubernetes-кластера.
+## Цель
 
-Цель — собрать логи со всех нод и pod’ов и просматривать их через Grafana.
+Обеспечить централизованный сбор логов Kubernetes-кластера без внешних managed-сервисов:
 
----
-
-## Общая идея
-
-Для логирования используется стек Grafana:
-
-- **Loki** — система хранения логов
-- **Promtail** — агент для сбора логов с нод
-- **Grafana** — интерфейс для просмотра логов
-
-Схема работы:
-pod logs → promtail → loki → grafana
-
----
-
-## Используемые компоненты
-
-- Grafana Loki (single binary)
-- Promtail (DaemonSet)
-- Grafana (установлена на этапе мониторинга)
+* сбор логов контейнеров и kubelet
+* минимальное потребление ресурсов
+* интеграция с Grafana
 
 ---
 
 ## Архитектура
 
-### Loki
+* Namespace: `logging`
+* Loki: **single binary mode**
+* Storage:
 
-Используется режим **single binary**, так как кластер небольшой.
+  * metadata + index — внутри pod
+  * chunks — S3-совместимое хранилище
+* Promtail:
 
-- один pod Loki
-- хранение данных внутри pod (без распределённого хранилища)
-- подходит для dev / lab / learning среды
+  * DaemonSet на всех нодах
+  * сбор:
 
-### Promtail
+    * container logs (`/var/log/pods`)
+    * kubelet logs
 
-Promtail разворачивается как **DaemonSet**:
-
-- работает на каждой ноде
-- читает логи контейнеров из: /var/log/pods
-
-- автоматически добавляет Kubernetes-лейблы:
-- namespace
-- pod
-- container
-- node
+Режим single выбран осознанно — для MVP и небольшого кластера он проще и надёжнее, чем distributed.
 
 ---
 
-## Установка Loki и Promtail
-
-Установка выполняется через Helm и автоматизируется Ansible.
-
-Файлы:
-platform/logging/loki/values.yaml
-automation/ansible/playbooks/logging.yml
-
-Запуск установки:
+## Развёртывание
 
 ```bash
 make logging
+```
 
-После установки проверяем состояние:
-kubectl -n logging get pods -o wide
+Playbook выполняет:
+
+* установку Loki
+* настройку backend-хранилища
+* установку Promtail
+* регистрацию Loki datasource в Grafana
+
+---
+
+## Проверка
+
+### Pods
+
+```bash
+kubectl -n logging get pods
+```
+
+Ожидаемо:
+
+* Loki — `Running`
+* Promtail — `Running` на всех нодах
+
+### Grafana
+
+1. Открыть Grafana через ingress
+2. Перейти в **Explore**
+3. Выбрать datasource **Loki**
+4. Выполнить запрос:
+
+```
+{namespace="online-boutique"}
+```
+
+Логи должны отображаться.
+
+---
+
+## Типовые проблемы
+
+### PVC без StorageClass
+
+Решение: использовать `local-path-provisioner` как default StorageClass.
+
+### Ошибки ring / memberlist
+
+Возникают при неверном режиме Loki. В данном проекте используется **single binary**, поэтому эти ошибки исключены.
+
+---
+
+## Ограничения
+
+* ❌ Нет retention policy (настраивается вручную)
+* ❌ Нет multi-tenant isolation
+
+Для учебного и MVP-сценария это допустимо.
