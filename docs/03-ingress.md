@@ -1,135 +1,85 @@
-# Ingress Controller и публикация сервисов
+# 03 — Ingress
 
-В данном разделе описана настройка Ingress Controller и публикация приложения по HTTP.
+## Цель
 
-Цель этапа — обеспечить доступ к сервисам Kubernetes-кластера извне.
-
----
-
-## Общая идея
-
-Кластер развернут на VDS без cloud LoadBalancer, поэтому стандартный Service типа `LoadBalancer` недоступен.
-
-Для решения этой задачи используется следующий подход:
-
-* ingress-nginx устанавливается как **DaemonSet**
-* используется **hostNetwork: true**
-* Ingress слушает порты **80/443 напрямую на worker-нодах**
-
-Таким образом, пользователь может обращаться к сервисам по IP-адресу worker-ноды.
-
----
-
-## Используемые компоненты
+Обеспечить внешний доступ к сервисам Kubernetes-кластера **без облачных Load Balancer’ов**, используя:
 
 * ingress-nginx
-* Helm
-* Kubernetes Ingress
+* DaemonSet + hostNetwork
+* маршрутизацию по Host header
 
 ---
 
-## Установка ingress-nginx
+## Архитектура
 
-Ingress Controller устанавливается с помощью Helm и автоматизируется через Ansible.
+* ingress-nginx развёрнут как **DaemonSet**
+* `hostNetwork: true`
+* Порты **80/443** открыты напрямую на worker-нодах
+* Один ingress обслуживает несколько сервисов по доменам:
 
-### Основные параметры установки
+  * `vault.ejara1.ru` → HashiCorp Vault
+  * `shop.ejara1.ru` → Online Boutique
 
-* тип контроллера: `DaemonSet`
-* включён `hostNetwork`
-* сервис создаётся как `ClusterIP`
+**Важно:**
 
-Файл с параметрами:
+* 443 порт **общий для всех сервисов**
+* маршрутизация происходит по HTTP Host / SNI
+* Vault и Online Boutique не конфликтуют между собой
 
-```
-platform/ingress/ingress-nginx/values.yaml
-```
+---
 
-Установка выполняется командой:
+## Почему DaemonSet + hostNetwork
+
+Такой подход выбран осознанно:
+
+* нет необходимости в cloud Load Balancer
+* минимальная задержка
+* простая и прозрачная схема
+* хорошо подходит для bare-metal и self-hosted кластеров
+
+Минусы:
+
+* ingress доступен только на тех нодах, где он запущен
+* требуется внешний DNS, указывающий на IP worker-ноды
+
+---
+
+## Развёртывание
 
 ```bash
 make ingress
-```
-
-После установки проверяется состояние подов:
-
-```bash
-kubectl -n ingress-nginx get pods -o wide
-```
-
-Ожидаемый результат — pod ingress-nginx на каждой worker-ноде.
-
----
-
-## Открытие портов на worker-нодах
-
-Для доступа извне на worker-нодах должны быть открыты порты 80 и 443.
-
-Настройка выполняется через Ansible:
-
-```bash
 make ufw-ingress
 ```
 
 ---
 
-## Тестовое приложение
+## DNS
 
-Для проверки работы Ingress используется простое тестовое приложение `whoami`.
+Для каждого сервиса создаётся отдельная DNS-запись:
 
-Приложение включает:
+* `vault.ejara1.ru` → IP worker-ноды
+* `shop.ejara1.ru` → IP worker-ноды
 
-* Deployment (2 реплики)
-* Service
-* Ingress
+> Для MVP используется **один IP** worker-ноды. Масштабирование возможно через несколько A-записей.
 
-Манифест расположен в:
+---
 
-```
-platform/apps/demo/whoami.yaml
-```
-
-Применение:
+## Проверка
 
 ```bash
-kubectl apply -f platform/apps/demo/whoami.yaml
+kubectl -n ingress-nginx get pods
+kubectl get ingress -A
 ```
 
----
-
-## Проверка работы
-
-Проверка выполняется через HTTP-запрос к worker-ноде с указанием Host-заголовка.
-
-Пример:
+Пример теста:
 
 ```bash
-curl -H "Host: whoami.<worker-ip>.nip.io" http://<worker-ip>/
-```
-
-Пример результата:
-
-```
-Hostname: whoami-xxxxx
-```
-
-Это означает, что запрос прошёл следующий путь:
-
-```
-Internet → worker node → ingress-nginx → service → pod
+curl -I https://shop.ejara1.ru
 ```
 
 ---
 
-## Результат этапа
+## Примечания
 
-На данном этапе реализована публикация сервисов Kubernetes-кластера по HTTP:
-
-* ingress-nginx развернут в кластере
-* доступ осуществляется через IP worker-ноды
-* приложения публикуются стандартным объектом Ingress
-
-Ingress используется далее для размещения пользовательских приложений и сервисов платформы.
-
----
-
-Следующий этап — настройка мониторинга и наблюдаемости кластера.
+* nip.io использовался только для раннего smoke-теста
+* в финальной конфигурации применяется собственный домен
